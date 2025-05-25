@@ -233,22 +233,8 @@ int pa_alsa_set_hw_params(
         goto finish;
     }
 
-    if (_use_mmap) {
-
-        if (snd_pcm_hw_params_set_access(pcm_handle, hwparams, SND_PCM_ACCESS_MMAP_INTERLEAVED) < 0) {
-
-            /* mmap() didn't work, fall back to interleaved */
-
-            if ((ret = snd_pcm_hw_params_set_access(pcm_handle, hwparams, SND_PCM_ACCESS_RW_INTERLEAVED)) < 0) {
-                pa_log_debug("snd_pcm_hw_params_set_access() failed: %s", pa_alsa_strerror(ret));
-                check_access(pcm_handle, hwparams, true);
-                goto finish;
-            }
-
-            _use_mmap = false;
-        }
-
-    } else if ((ret = snd_pcm_hw_params_set_access(pcm_handle, hwparams, SND_PCM_ACCESS_RW_INTERLEAVED)) < 0) {
+    // 只允许RW_INTERLEAVED
+    if ((ret = snd_pcm_hw_params_set_access(pcm_handle, hwparams, SND_PCM_ACCESS_RW_INTERLEAVED)) < 0) {
         pa_log_debug("snd_pcm_hw_params_set_access() failed: %s", pa_alsa_strerror(ret));
         check_access(pcm_handle, hwparams, false);
         goto finish;

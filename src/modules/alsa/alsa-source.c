@@ -582,181 +582,6 @@ static size_t check_left_to_record(struct userdata *u, size_t n_bytes, bool on_t
     return left_to_record;
 }
 
-static int mmap_read(struct userdata *u, pa_usec_t *sleep_usec, bool polled, bool on_timeout) {
-    bool work_done = false;
-    bool recovery_done = false;
-    pa_usec_t max_sleep_usec = 0, process_usec = 0;
-    size_t left_to_record;
-    unsigned j = 0;
-
-    pa_assert(u);
-    pa_source_assert_ref(u->source);
-
-    if (u->use_tsched)
-        hw_sleep_time(u, &max_sleep_usec, &process_usec);
-
-    for (;;) {
-        snd_pcm_sframes_t n;
-        size_t n_bytes;
-        int r;
-        bool after_avail = true;
-
-        if (PA_UNLIKELY((n = pa_alsa_safe_avail(u->pcm_handle, u->hwbuf_size, &u->source->sample_spec)) < 0)) {
-
-            recovery_done = true;
-            if ((r = try_recover(u, "snd_pcm_avail", (int) n)) >= 0)
-                continue;
-
-            return r;
-        }
-
-        n_bytes = (size_t) n * u->frame_size;
-
-#ifdef DEBUG_TIMING
-        pa_log_debug("avail: %lu", (unsigned long) n_bytes);
-#endif
-
-        left_to_record = check_left_to_record(u, n_bytes, on_timeout);
-        on_timeout = false;
-
-        if (u->use_tsched)
-            if (!polled &&
-                pa_bytes_to_usec(left_to_record, &u->source->sample_spec) > process_usec+max_sleep_usec/2) {
-#ifdef DEBUG_TIMING
-                pa_log_debug("Not reading, because too early.");
-#endif
-                break;
-            }
-
-        if (PA_UNLIKELY(n_bytes <= 0)) {
-
-            if (polled)
-                PA_ONCE_BEGIN {
-                    char *dn = pa_alsa_get_driver_name_by_pcm(u->pcm_handle);
-                    pa_log(_("ALSA woke us up to read new data from the device, but there was actually nothing to read.\n"
-                             "Most likely this is a bug in the ALSA driver '%s'. Please report this issue to the ALSA developers.\n"
-                             "We were woken up with POLLIN set -- however a subsequent snd_pcm_avail() returned 0 or another value < min_avail."),
-                           pa_strnull(dn));
-                    pa_xfree(dn);
-                } PA_ONCE_END;
-
-#ifdef DEBUG_TIMING
-            pa_log_debug("Not reading, because not necessary.");
-#endif
-            break;
-        }
-
-        if (++j > 10) {
-#ifdef DEBUG_TIMING
-            pa_log_debug("Not filling up, because already too many iterations.");
-#endif
-
-            break;
-        }
-
-        polled = false;
-
-#ifdef DEBUG_TIMING
-        pa_log_debug("Reading");
-#endif
-
-        for (;;) {
-            pa_memchunk chunk;
-            void *p;
-            int err;
-            const snd_pcm_channel_area_t *areas;
-            snd_pcm_uframes_t offset, frames;
-            snd_pcm_sframes_t sframes;
-
-            frames = (snd_pcm_uframes_t) (n_bytes / u->frame_size);
-/*             pa_log_debug("%lu frames to read", (unsigned long) frames); */
-
-            if (PA_UNLIKELY((err = pa_alsa_safe_mmap_begin(u->pcm_handle, &areas, &offset, &frames, u->hwbuf_size, &u->source->sample_spec)) < 0)) {
-
-                if (!after_avail && err == -EAGAIN)
-                    break;
-
-                recovery_done = true;
-                if ((r = try_recover(u, "snd_pcm_mmap_begin", err)) == 0)
-                    continue;
-
-                if (r == 1)
-                    break;
-
-                return r;
-            }
-
-            /* Make sure that if these memblocks need to be copied they will fit into one slot */
-            frames = PA_MIN(frames, u->frames_per_block);
-
-            if (!after_avail && frames == 0)
-                break;
-
-            pa_assert(frames > 0);
-            after_avail = false;
-
-            /* Check these are multiples of 8 bit */
-            pa_assert((areas[0].first & 7) == 0);
-            pa_assert((areas[0].step & 7) == 0);
-
-            /* We assume a single interleaved memory buffer */
-            pa_assert((areas[0].first >> 3) == 0);
-            pa_assert((areas[0].step >> 3) == u->frame_size);
-
-            p = (uint8_t*) areas[0].addr + (offset * u->frame_size);
-
-            chunk.memblock = pa_memblock_new_fixed(u->core->mempool, p, frames * u->frame_size, true);
-            chunk.length = pa_memblock_get_length(chunk.memblock);
-            chunk.index = 0;
-
-            pa_source_post(u->source, &chunk);
-            pa_memblock_unref_fixed(chunk.memblock);
-
-            if (PA_UNLIKELY((sframes = snd_pcm_mmap_commit(u->pcm_handle, offset, frames)) < 0)) {
-
-                recovery_done = true;
-                if ((r = try_recover(u, "snd_pcm_mmap_commit", (int) sframes)) == 0)
-                    continue;
-
-                if (r == 1)
-                    break;
-
-                return r;
-            }
-
-            work_done = true;
-
-            u->read_count += frames * u->frame_size;
-
-#ifdef DEBUG_TIMING
-            pa_log_debug("Read %lu bytes (of possible %lu bytes)", (unsigned long) (frames * u->frame_size), (unsigned long) n_bytes);
-#endif
-
-            if ((size_t) frames * u->frame_size >= n_bytes)
-                break;
-
-            n_bytes -= (size_t) frames * u->frame_size;
-        }
-    }
-
-    if (u->use_tsched) {
-        *sleep_usec = pa_bytes_to_usec(left_to_record, &u->source->sample_spec);
-        process_usec = u->tsched_watermark_usec;
-
-        if (*sleep_usec > process_usec)
-            *sleep_usec -= process_usec;
-        else
-            *sleep_usec = 0;
-
-        /* If the PCM was recovered, it may need restarting. Reduce the sleep time
-         * to 0 to ensure immediate restart. */
-        if (recovery_done)
-            *sleep_usec = 0;
-    }
-
-    return work_done ? 1 : 0;
-}
-
 static int unix_read(struct userdata *u, pa_usec_t *sleep_usec, bool polled, bool on_timeout) {
     int work_done = false;
     bool recovery_done = false;
@@ -1732,10 +1557,7 @@ static void thread_func(void *userdata) {
                 u->first = false;
             }
 
-            if (u->use_mmap)
-                work_done = mmap_read(u, &sleep_usec, revents & POLLIN, on_timeout);
-            else
-                work_done = unix_read(u, &sleep_usec, revents & POLLIN, on_timeout);
+            work_done = unix_read(u, &sleep_usec, revents & POLLIN, on_timeout);
 
             if (work_done < 0)
                 goto fail;
@@ -2040,7 +1862,7 @@ pa_source *pa_alsa_source_new(pa_module *m, pa_modargs *ma, const char*driver, p
     uint32_t nfrags, frag_size, buffer_size, tsched_size, tsched_watermark;
     snd_pcm_uframes_t period_frames, buffer_frames, tsched_frames;
     size_t frame_size;
-    bool use_mmap = true;
+    bool use_mmap = false;
     bool use_tsched = true;
     bool ignore_dB = false;
     bool namereg_fail = false;

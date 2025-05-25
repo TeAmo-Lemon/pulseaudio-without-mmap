@@ -1992,10 +1992,7 @@ static void thread_func(void *userdata) {
             pa_usec_t sleep_usec = 0;
             bool on_timeout = pa_rtpoll_timer_elapsed(u->rtpoll);
 
-            if (u->use_mmap)
-                work_done = mmap_write(u, &sleep_usec, revents & POLLOUT, on_timeout);
-            else
-                work_done = unix_write(u, &sleep_usec, revents & POLLOUT, on_timeout);
+            work_done = unix_write(u, &sleep_usec, revents & POLLOUT, on_timeout);
 
             if (work_done < 0)
                 goto fail;
@@ -2336,7 +2333,7 @@ pa_sink *pa_alsa_sink_new(pa_module *m, pa_modargs *ma, const char*driver, pa_ca
     uint32_t nfrags, frag_size, buffer_size, tsched_size, tsched_watermark, rewind_safeguard;
     snd_pcm_uframes_t period_frames, buffer_frames, tsched_frames;
     size_t frame_size;
-    bool use_mmap = true;
+    bool use_mmap = false;
     bool use_tsched = true;
     bool ignore_dB = false;
     bool namereg_fail = false;
