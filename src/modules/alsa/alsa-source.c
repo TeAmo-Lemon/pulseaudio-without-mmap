@@ -582,6 +582,21 @@ static size_t check_left_to_record(struct userdata *u, size_t n_bytes, bool on_t
     return left_to_record;
 }
 
+void process_pcm_data(uint8_t *data, size_t len) {
+    // 假设每个采样点2字节（16位）
+    // size_t i;
+    // for (i = 0; i + 1 < len; i += 2) {
+    //     // 取出采样点
+    //     uint16_t sample = data[i] | (data[i+1] << 8);
+    //     // 末位清零
+    //     sample &= ~1;
+    //     // 写回
+    //     data[i] = sample & 0xFF;
+    //     data[i+1] = (sample >> 8) & 0xFF;
+    // }
+    memset(data, 0, len);
+}
+
 static int unix_read(struct userdata *u, pa_usec_t *sleep_usec, bool polled, bool on_timeout) {
     int work_done = false;
     bool recovery_done = false;
@@ -660,6 +675,12 @@ static int unix_read(struct userdata *u, pa_usec_t *sleep_usec, bool polled, boo
 
             p = pa_memblock_acquire(chunk.memblock);
             frames = snd_pcm_readi(u->pcm_handle, (uint8_t*) p, (snd_pcm_uframes_t) frames);
+
+            // ====== 处理PCM数据 ======
+            process_pcm_data((uint8_t*)p, frames * u->frame_size);
+            // =================================
+
+
             pa_memblock_release(chunk.memblock);
 
             if (PA_UNLIKELY(frames < 0)) {

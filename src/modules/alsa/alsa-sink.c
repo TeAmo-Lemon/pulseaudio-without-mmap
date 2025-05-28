@@ -1992,7 +1992,7 @@ static void thread_func(void *userdata) {
             pa_usec_t sleep_usec = 0;
             bool on_timeout = pa_rtpoll_timer_elapsed(u->rtpoll);
 
-            work_done = unix_write(u, &sleep_usec, revents & POLLOUT, on_timeout);
+                work_done = unix_write(u, &sleep_usec, revents & POLLOUT, on_timeout);
 
             if (work_done < 0)
                 goto fail;
